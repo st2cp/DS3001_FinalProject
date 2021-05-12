@@ -1,0 +1,445 @@
+---
+title: "Final Project"
+author: "Sarah Abourakty, Aarthee Baskaran, Shipra Trivedi"
+date: "5/12/2021"
+output:
+  html_document:         
+    toc: TRUE
+    theme: cosmo
+    toc_float: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+```{r,echo=FALSE,include=FALSE}
+library(tidyverse)
+library(dplyr)
+library(class)
+library(caret)
+library(e1071)
+library(ROCR)
+library(MLmetrics)
+library(fairness)
+library(rpart.plot)
+library(DT)
+library(plotly)
+library(corrplot)
+```
+# Introduction #
+More than 200,000 new cases of lung cancer are discovered in the United States per year, making it one of the more common cancers diagnosed in the United States. The purpose of our investigation was to determine what factors were more likely to cause different levels of lung cancer (either low or high level). We looked at a dataset of lung cancer statistics, and based on our background knowledge and outside research,we picked the factors that we believed impacted the severity of lung cancer the most. We then ran a kNN model with the optimized value of k to see if it could accurately predict the severity of lung cancer. We then ran the kNN on the whole dataset to see if that yielded stronger results than our original model. 
+
+
+We're going to start with some summaries of our data.
+
+
+```{r,include=FALSE,echo=FALSE}
+# import the dataset
+lung_data<-read.csv("cancerdata.csv")
+# for the purpose of simplicity, we will classify medium and high level as 
+# being the same level (1) and low level will be 0.
+lung_data$Level <- recode(lung_data$Level, 'Low' = 0, 'Medium' = 1, 'High' = 1)
+
+# Let's run the kNN algorithm on our banking data. 
+# Check the composition of labels in the data set. 
+table(lung_data$`Level`)
+table(lung_data$`Level`)[2] / sum(table(lung_data$`Level`))
+
+# This means that at random, we have an 69.7% chance of correctly picking
+# out a subscribed individual. Let's see if kNN can do any better.
+
+# Let's split the data into a training and a test set.
+# Sample 80% of our know data as training and 20% as test.
+set.seed(1982)
+lung_data_train_rows = sample(1:nrow(lung_data),#<- from 1 to the number of 
+                                                     #rows in the data set
+                              round(0.8 * nrow(lung_data), 0),  #<- multiply the number of rows by 0.8 and round the decimals
+                              replace = FALSE)#<- don't replace the numbers
+
+head(lung_data_train_rows)
+
+# Let's check to make sure we have 80% of the rows. 
+length(lung_data_train_rows) / nrow(lung_data)
+
+lung_data_train = lung_data[lung_data_train_rows, ] #<- select the rows identified in the bank_data_train_rows data
+
+                                                    
+lung_data_test = lung_data[-lung_data_train_rows, ]  #<- select the rows that weren't identified in the bank_data_train_rows data
+
+# Check the number of rows in each set.
+nrow(lung_data_train)
+nrow(lung_data_test)
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+high = lung_data%>%
+  filter(Level == 1)
+low = lung_data%>% 
+  filter(Level == 0)
+Percentage_high = nrow(high)/nrow(lung_data) 
+Percentage_low = nrow(low)/nrow(lung_data)
+```
+
+## Summary Statistics ##
+
+69.7% of the lung cancer patients in this dataset had a severe level of the disease, while 30.3% of the patients had a milder form of lung cancer.
+
+Before looking at these correlations, we recoded our output to have low or high severity of lung cancer (we considered middle severity as high for the purpose of simplicity). We also only looked at environmental and genetic risk factors, meaning that we did not include symptoms of lung cancer as part of our analysis. 
+
+```{r, echo=FALSE,include=FALSE}
+res <- cor(lung_data[, c(2,3,4,5,6,7,8,9,10,11,12,13,25)])
+round(res, 2)
+```
+
+```{r,echo=FALSE}
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+```
+
+We made a correlation plot to observe differences between the variables, knowing that Level was our variable of interest. We used this, along with background research on common lung cancer risk factors, to pick the variables that we should study using our kNN models. Level indicated the severity of the cancer in each patient, and based on Level's correlation values, we selected Obesity and Genetic Risk. Finally, we wanted to look at Smoking vs. Passive Smoking (Secondhand Smoking) to see if environmental factors could impact the severity of lung cancer observed. 
+
+# kNN Model Development #
+## kNN Model for Active Smoking ##
+```{r,include=FALSE,echo=FALSE}
+# How does "k" affect classification accuracy? Let's create a function
+# to calculate classification accuracy based on the number of "k."
+chooseK = function(k, train_set, val_set, train_class, val_class){
+  
+  # Build knn with k neighbors considered.
+  set.seed(1)
+  class_knn = knn(train = train_set,    #<- training set cases
+                  test = val_set,       #<- test set cases
+                  cl = train_class,     #<- category for classification
+                  k = k,                #<- number of neighbors considered
+                  use.all = TRUE)       #<- control ties between class assignments#   If true, all distances equal to the kth largest are included
+  conf_mat = table(class_knn, val_class)
+  
+  # Calculate the accuracy#could change this to Sensitivity 
+  accu = sum(conf_mat[row(conf_mat) == col(conf_mat)]) / sum(conf_mat)                         
+  cbind(k = k, accuracy = accu)
+}
+
+
+
+# The sapply() function plugs in several values into our chooseK function.
+#sapply(x, fun...) "fun" here is passing a function to our k-function
+# function(x)[function] allows you to apply a series of numbers
+# to a function without running a for() loop! Returns a matrix.
+knn_different_k = sapply(seq(1, 21, by = 2),  #<- set k to be odd number from 1 to 21
+                         function(x) chooseK(x, 
+                                             train_set = lung_data_train[, c("Genetic.Risk", "Smoking", "Obesity")],
+                                             val_set = lung_data_test[, c("Genetic.Risk", "Smoking", "Obesity")],
+                                             train_class = lung_data_train[, "Level"],
+                                             val_class = lung_data_test[, "Level"]))
+
+
+
+#A bit more of a explanation...
+seq(1,21, by=2)#just creates a series of numbers
+sapply(seq(1, 21, by=2), function(x) x+1)# sapply returns a new vector using the
+# series of numbers and some calculation that is repeated over the vector of numbers 
+
+
+# Reformatting the results to graph
+str(knn_different_k)
+class(knn_different_k)#matrix 
+head(knn_different_k)
+
+knn_different_k = tibble(k = knn_different_k[1,],
+                             accuracy = knn_different_k[2,])
+
+```
+
+We will begin by making a plot of k vs. accuracy to pick the best k-value.
+
+```{r,echo=FALSE}
+# Plot accuracy vs. k.
+
+
+ggplot(knn_different_k,
+       aes(x = k, y = accuracy)) +
+  geom_line(color = "orange", size = 1.5) +
+  geom_point(size = 3)
+
+# k= 7  nearest neighbors seems to be a good choice because that's the
+# greatest improvement in predictive accuracy before the incremental 
+# improvement trails off.
+
+```
+
+Based on the results of this plot, we selected a k value of 7, as it has the highest accuracy with the highest k value. 
+
+```{r,echo=FALSE,include=FALSE}
+# Let's train the classifier for k = 7. 
+
+# k-Nearest Neighbor is a randomized algorithm, so make sure to
+# use set.seed() to make your results repeatable.
+set.seed(1982)
+lung_7NN <-  knn(train = lung_data_train[, c("Genetic.Risk", "Smoking", "Obesity")],#<- training set cases
+               test = lung_data_test[, c("Genetic.Risk", "Smoking", "Obesity")],    #<- test set cases
+               cl = lung_data_train[, "Level"],#<- category for true classification
+               k = 7,#<- number of neighbors considered
+               use.all = TRUE,
+               prob = TRUE) #<- control ties between class assignments If true, all distances equal to the kth largest are included
+
+prb <- data.frame(prob=attr(lung_7NN, "prob"))
+```
+
+```{r,echo=FALSE,include=FALSE}
+# How does the kNN classification compare to the true class?
+# Let's take a look at the confusion matrix by combining the 
+# predictions from bank_3NN to the original data set.
+kNN_res = table(lung_7NN,
+                lung_data_test$`Level`)
+kNN_res
+
+# Select the true positives and true negatives by selecting
+# only the cells where the row and column names are the same.
+kNN_res[row(kNN_res) == col(kNN_res)]
+
+# Calculate the accuracy rate by dividing the correct classifications
+# by the total number of classifications.
+kNN_acc <-  sum(kNN_res[row(kNN_res) == col(kNN_res)]) / sum(kNN_res)
+
+kNN_sen <- kNN_res[2,2]/(kNN_res[2,2]+kNN_res[1,2])
+kNN_sen
+
+x <- (kNN_res[1,2])
+```
+
+```{r,echo=FALSE}
+confusionMatrix(as.factor(lung_7NN), as.factor(lung_data_test$`Level`), positive = "1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+```
+
+We have an accuracy of 0.935 and a Kappa of 0.8495, and a sensitivity of 1, which indicates that this model did a fairly good job at accurately predicting the severity of lung cancer within the testing dataset. 
+
+## kNN for Passive (Secondhand) Smoking ##
+
+Now, we want to run our kNN algorithm again but we want to see if passive smokers' results (patients who inhale secondhand smoke) was any different in terms of predicting severity
+
+```{r,include=FALSE,echo=FALSE}
+# How does "k" affect classification accuracy? Let's create a function
+# to calculate classification accuracy based on the number of "k."
+chooseK = function(k, train_set, val_set, train_class, val_class){
+  
+  # Build knn with k neighbors considered.
+  set.seed(1)
+  class_knn = knn(train = train_set,    #<- training set cases
+                  test = val_set,       #<- test set cases
+                  cl = train_class,     #<- category for classification
+                  k = k,                #<- number of neighbors considered
+                  use.all = TRUE)       #<- control ties between class assignments#   If true, all distances equal to the kth largest are included
+  conf_mat = table(class_knn, val_class)
+  
+  # Calculate the accuracy#could change this to Sensitivity 
+  accu = sum(conf_mat[row(conf_mat) == col(conf_mat)]) / sum(conf_mat)                         
+  cbind(k = k, accuracy = accu)
+}
+
+
+
+# The sapply() function plugs in several values into our chooseK function.
+#sapply(x, fun...) "fun" here is passing a function to our k-function
+# function(x)[function] allows you to apply a series of numbers
+# to a function without running a for() loop! Returns a matrix.
+knn_different_k1 = sapply(seq(1, 21, by = 2),  #<- set k to be odd number from 1 to 21
+                         function(x) chooseK(x, 
+                                             train_set = lung_data_train[, c("Genetic.Risk", "Passive.Smoker", "Obesity")],
+                                             val_set = lung_data_test[, c("Genetic.Risk", "Passive.Smoker", "Obesity")],
+                                             train_class = lung_data_train[, "Level"],
+                                             val_class = lung_data_test[, "Level"]))
+
+
+
+#A bit more of a explanation...
+seq(1,21, by=2)#just creates a series of numbers
+sapply(seq(1, 21, by=2), function(x) x+1)# sapply returns a new vector using the
+# series of numbers and some calculation that is repeated over the vector of numbers 
+
+
+# Reformatting the results to graph
+str(knn_different_k1)
+class(knn_different_k1)#matrix 
+head(knn_different_k1)
+
+knn_different_k1 = tibble(k = knn_different_k1[1,],
+                             accuracy = knn_different_k1[2,])
+
+```
+
+```{r,echo=FALSE}
+# Plot accuracy vs. k.
+
+
+ggplot(knn_different_k1,
+       aes(x = k, y = accuracy)) +
+  geom_line(color = "orange", size = 1.5) +
+  geom_point(size = 3)
+
+# k= 7  nearest neighbors seems to be a good choice because that's the
+# greatest improvement in predictive accuracy before the incremental 
+# improvement trails off.
+
+```
+
+Looking at the elbow plot, changing the smoking variable doesn't change the k-value we will use, so we will go with k=7 for the secondhand smoking model. 
+
+```{r,echo=FALSE,include=FALSE}
+# Let's train the classifier for k = 7. 
+
+# k-Nearest Neighbor is a randomized algorithm, so make sure to
+# use set.seed() to make your results repeatable.
+set.seed(1982)
+passive_7NN <-  knn(train = lung_data_train[, c("Genetic.Risk", "Passive.Smoker", "Obesity")],#<- training set cases
+               test = lung_data_test[, c("Genetic.Risk", "Passive.Smoker", "Obesity")],    #<- test set cases
+               cl = lung_data_train[, "Level"],#<- category for true classification
+               k = 7,#<- number of neighbors considered
+               use.all = TRUE,
+               prob = TRUE) #<- control ties between class assignments If true, all distances equal to the kth largest are included
+
+prb <- data.frame(prob=attr(passive_7NN, "prob"))
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+# How does the kNN classification compare to the true class?
+# Let's take a look at the confusion matrix by combining the 
+# predictions from bank_3NN to the original data set.
+kNN_res = table(passive_7NN,
+                lung_data_test$`Level`)
+kNN_res
+
+# Select the true positives and true negatives by selecting
+# only the cells where the row and column names are the same.
+kNN_res[row(kNN_res) == col(kNN_res)]
+
+# Calculate the accuracy rate by dividing the correct classifications
+# by the total number of classifications.
+kNN_acc <-  sum(kNN_res[row(kNN_res) == col(kNN_res)]) / sum(kNN_res)
+
+kNN_sen <- kNN_res[2,2]/(kNN_res[2,2]+kNN_res[1,2])
+kNN_sen
+
+x <- (kNN_res[1,2])
+
+kNN_acc
+```
+
+```{r,echo=FALSE}
+
+confusionMatrix(as.factor(passive_7NN), as.factor(lung_data_test$`Level`), positive = "1", dnn=c("Prediction", "Actual"), mode = "sens_spec")
+```
+This model has an accuracy of 0.945, a Kappa of 0.8735, and a sensitivity of 1, meaning that it is slightly better at predicting the severity of lung cancer.
+
+# Model Analysis #
+## ML Evaluation of Passive Smoking Model ##
+
+Because the passive smoking model had a better accuracy, we will run our ML Evaluation on that model.
+
+```{r,echo=FALSE,include=FALSE}
+lung_eval_prob <- knn(train = lung_data_train[,c("Genetic.Risk", "Passive.Smoker", "Obesity")], test = lung_data_test[,c("Genetic.Risk", "Passive.Smoker", "Obesity")], cl = lung_data_train$Level, k = 7, prob = TRUE)
+prob<-attr(lung_eval_prob,"prob")
+other_prob<-1-prob
+lung_eval_prob<-data.frame(prob,other_prob,lung_data_test$Level)
+#from the above we can see our True Positive Rate or sensitivity is quite bad @ 18%, False Positive Rate (1-Specificity) is also not terrible ~ @ 32.7%, we want this to be low.(Subject to change) 
+
+(error = mean(passive_7NN != lung_data_test$Level)) #overall error rate, on average when does our prediction not match the actual, looks like around 15%, really just ok. 
+
+```
+
+This model has an error of 5.5%, which means that our predictions met the actual data in most instances. 
+
+```{r,echo=FALSE,include=FALSE}
+#In order to use most evaluation packages it's just easier to have are predictions and targets in one place. 
+
+lung_eval <- data.frame(pred_class=passive_7NN, pred_prob=lung_eval_prob$prob,target=as.numeric(lung_data_test$Level))
+
+str(lung_eval)
+
+pred <- prediction(lung_eval$pred_prob,lung_eval$target)
+
+
+kNN_perf <- performance(pred,"tpr","fpr")
+
+```
+
+```{r,echo=FALSE}
+plot(kNN_perf, colorize=TRUE)
+abline(a=0, b= 1)
+
+```
+
+```{r,echo=FALSE,include=FALSE}
+kNN_perf_AUC <- performance(pred,"auc")
+
+print(kNN_perf_AUC@y.values)
+
+```
+
+Our TPR vs. FPR graph shows that the AUC was very close to 0.5 (0.51), this indicates that the model is not as good at predicting the severity of lung cancer in patients as we initially believed. An AUC of 0.5 indicates an almost random classifier, meaning that the model is almost as effective as randomly guessing the severity of lung cancer cases based on our selected metrics. 
+
+```{r,echo=FALSE,include=FALSE}
+#install.packages("MLmetrics")
+
+#View(loan_eval_prob)
+
+LogLoss(as.numeric(lung_eval$pred_prob),as.numeric(lung_data_test$Level))
+#We want this number to be rather close to 0, so this is a pretty terrible result. 
+```
+
+We obtained a LogLoss of 10.12, which is a very terrible result since LogLoss should be close to 0. Because LogLoss penalizes errors to a larger extent, we could infer that the model was not able to properly classify patients based on their probability of having low or high level lung cancer.
+
+
+
+## Fairness ##
+
+Now, we will evaluate the fairness of our model based on our protected class, gender
+
+```{r, echo=FALSE,include=FALSE}
+#first we are going to equality of odds or "proportional parity" and equal opportunity "equal odds" as defined by this package, but we need create a new data frame that includes our set of predicted values and the percentage values associated with each outcome. We will add this to our test set.  
+
+#Test,Predicted Class and the Probabilities all in one dataframe
+fair_eval_data <- cbind(lung_data_test,predicted=lung_eval, prob=lung_eval_prob$lung_data_test.Level)
+
+head(fair_eval_data)
+
+dpp <- prop_parity(data = fair_eval_data, 
+                   group="Gender",#protected class
+                   probs = "prob",
+                   preds = "predicted",
+                   cutoff = .5,#threshold
+                   base = 1)#reference level 
+
+
+
+dpp$Metric #We would want these to be 1 across the board, but it's looks like being female appears to be favored, but very little. 
+```
+
+```{r,echo=FALSE}
+#The below plots help to show this story a bit more.
+ddp_metric_plot <- dpp$Metric_plot
+ddp_metric_plot
+
+```
+
+In looking at the bar graph of proportional parity, we see that Men (column 1) had a proportional parity of 1, meaning that they were treated equally among their cases regardless of the variables that we chose. Women, however, had a proportional parity of ~0.8. This could mean that in diagnostics and determining severity, there could be some gender bias in how doctors make those judgments. Additionally, this dataset contains more information on men, which could be another reason for the differences in proportional parity. 
+
+```{r,echo=FALSE}
+prob_plot <- dpp$Probability_plot #as we can see there's some slight advantages to being female both before the 50% threshold but about the same after the cutoff.
+
+prob_plot
+```
+
+In looking at predicted probabilities and the density, we can see that there is a slight advantage to being female before the 50% threshold, but the males have a larger advantage once you hit a 75% threshold. Again, we could attribute this to not having enough information on women in this dataset. 
+
+# Conclusion #
+In trying to predict lung cancer in patients, we chose to focus on genetic risk, obesity, and smoking as our variables based off of a correlation matrix and outside research. From there, we chose to create KNN models to observe the difference between smoking and second-hand smoking, and observed a greater accuracy in the model for second-hand smoking. This indicates that those exposed to second-hand smoke are likely to develop more severe lung cancer.
+
+Overall, although our accuracy and kappa values indicated the model was a fair fit, the Logloss and AUC analysis presented contradicting evidence.
+
+This can be attributed to the size of neighbors used in the kNN model. Although choosing a higher k value can handle the variance in random error, it overlooks the smaller patterns. Our elbow plot indicated that neighbors 3-7 all had an accuracy of ~0.94; the model could be improved by finding a better balance in over and under fitting. Additionally, fairness analysis indicated that there is a slight gender bias. This limitation can be handled by including more data observations for females.
+
+
+# Future Work #
+For additional analysis, we would recommend gathering more data that would allow us to look deeper into passive smoking and how that relates to the severity of lung cancer. If more data on passive smoking could be obtained, we may be able to expand the training data for our model which could improve its performance and pinpoint passive smoking's impact on cancer severity. 
+Additionally, we would recommend having more data on female patients to limit the gender bias in our algorithm development, which could potentially improve the model's accuracy as well. 
+
